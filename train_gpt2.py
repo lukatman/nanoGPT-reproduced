@@ -111,6 +111,9 @@ class GPT(nn.Module):
         # final classifier (n_embd -> vocab)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        # weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
+
     def forward(self, idx, targets=None):
         # idx is of shape (B, T)
         # it is the index of the tokens
@@ -194,28 +197,73 @@ class GPT(nn.Module):
         return model 
     
 # ------------------------------------------------
-num_return_sequences = 5
-max_length = 30
+import tiktoken
 
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+    
+        # at init load tokens from disk and store them in memory
+        with open('input.txt', 'r') as f:
+            text = f.read()
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+
+        # state
+        self.current_position = 0
+    
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position : self.current_position + (B*T)+1]
+        x = (buf[:-1].view(B, T)) # inputs
+        y = (buf[1:].view(B, T))  # targets
+        # advance the position in the tensor
+        self.current_position += B * T
+        # if loading the next batch would be out of bounds... reset
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+        return x, y
+
+# ------------------------------------------------
 if torch.backends.mps.is_available():
     device = 'mps'
 elif torch.cuda.is_available():
     device = 'cuda'
 else:
     device = 'cpu'
+device = "cpu"
 print(f"using device: {device}")
 
-model = GPT.from_pretrained('gpt2')
-model.eval()
+train_loader = DataLoaderLite(B=4, T=32)
+
+# get logits
+model = GPT(GPTConfig())
 model.to(device)
 
+# optimize!
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    # must set grads to 0 first, loss.backward() adds gradients to whatever they are
+    optimizer.zero_grad() 
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    # loss - a tensor with a single element. .item() moves to cpu and converts to float
+    print(f"step {i}, loss: {loss.item()}")
+
+
+import sys; sys.exit(0)
+
 # prefix tokens
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-tokens = enc.encode("Hello, I'm a language model,")
-tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8) - copy tokens 5 times
-x = tokens.to(device)
+model.eval()
+num_return_sequences = 5
+max_length = 30
 
 # generate! right now x is (B, T) where B = 5, T = 8
 torch.manual_seed(42)
