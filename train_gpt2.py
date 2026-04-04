@@ -111,7 +111,7 @@ class GPT(nn.Module):
         # final classifier (n_embd -> vocab)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         # idx is of shape (B, T)
         # it is the index of the tokens
         # the token we get by looking it up in the vocab table, wte
@@ -133,7 +133,13 @@ class GPT(nn.Module):
         # (T, vocab_size) -> each row is one position in the sequence (pos 0, pos 1, etc.)
         #                  > each col is an index for one token in the original vocab
         # so, highest scoring pos -> get column -> use col number as index into tokenizer vocabulary
-        return logits
+        loss = None
+        if targets is not None:
+            # cross_entropy(input, target). input shape (N, vocab_size) targets (N,)
+            # but logits = (B, T, vocab_size), and targets = (B, T). need to transform first
+            # view(-1) tells pytorch to infer the first dimension automatically: (B, T) -> (B*T)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
 
 
 
